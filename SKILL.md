@@ -11,6 +11,14 @@ metadata:
 
 学习文件都放在工作目录的 `rnsk/`：知识目录.md、题目册.xlsx、错题集.xlsx。讲解和判分由助手负责，脚本负责抓取、分类、校验和文件读写。
 
+## 路径约定
+
+下文所有命令里的 `$SKILL_DIR` 都指本 SKILL.md 所在目录，执行前先解析成绝对路径。不要依赖调用方的 cwd，AstrBot 的工具 cwd 是会话工作区，不是技能目录。
+
+```bash
+SKILL_DIR=$(cd "$(dirname "<本 SKILL.md 的绝对路径>")" && pwd)
+```
+
 ## 对用户的输出规范（硬性）
 
 首次出题和复习提问，发给用户的内容只允许包含：题面、选项（如果有）、让用户作答的一句话。以下信息一律只在内部思考和挑题时使用，绝不写进发给用户的消息：
@@ -27,13 +35,13 @@ metadata:
 先读进度：
 
 ```bash
-python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scripts/rnsk.py stats --dir <工作目录>
+python3 "$SKILL_DIR/scripts/rnsk.py" stats --dir <工作目录>
 ```
 
 目录不存在时，确认用户要学的语言；已从上下文明确则直接初始化：
 
 ```bash
-python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scripts/rnsk.py init --dir <工作目录> --lang <语言>
+python3 "$SKILL_DIR/scripts/rnsk.py" init --dir <工作目录> --lang <语言>
 ```
 
 可用 `--url` 指定菜鸟教程入口。初始化会给板块分类：核心知识、环境配置、推广/导读。推广/导读默认过滤，环境配置保留并标记建议跳过。初始化成功后告知板块数、过滤数和起始板块，并继续第一课。抓不到目录时不要编造，请用户提供正确的菜鸟教程地址。不要随便用 `--force`，它会重建目录并覆盖原进度。
@@ -43,7 +51,7 @@ python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scri
 已有目录时运行：
 
 ```bash
-python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scripts/rnsk.py next --dir <工作目录> --chars 6000
+python3 "$SKILL_DIR/scripts/rnsk.py" next --dir <工作目录> --chars 6000
 ```
 
 只依据返回的正文和要点讲解：先说明用途，再讲规则、易错点，配最小例子。不要照抄，也不要补写来源未支持的事实。正文抓取错误或为空时告知用户并给出页面地址，不要假装讲完。长内容分段讲，每段停下确认；未确认前不出题。
@@ -65,7 +73,7 @@ python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scri
 单选和多选必须正好 4 个选项，格式固定为 A-D；单选答案一个字母，多选答案是不重复的字母串；填空题不得有选项。题目最多 160 字，不能重复。题目必须来自本课，不考未讲内容；生成后先自检题干、选项、答案是否唯一且对应，再执行命令：
 
 ```bash
-python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scripts/rnsk.py addq --dir <工作目录> --board "<板块>" --point "<知识点>" --difficulty 基础 --type 单选题 --question "<题目>" --options "A.xx|B.xx|C.xx|D.xx" --answer A
+python3 "$SKILL_DIR/scripts/rnsk.py" addq --dir <工作目录> --board "<板块>" --point "<知识点>" --difficulty 基础 --type 单选题 --question "<题目>" --options "A.xx|B.xx|C.xx|D.xx" --answer A
 ```
 
 写入失败时先按脚本报错修正题目，再重新写入。
@@ -75,7 +83,7 @@ python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scri
 整组题完成、错题讲清后标记完成：
 
 ```bash
-python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scripts/rnsk.py mark --dir <工作目录> --board "<板块>"
+python3 "$SKILL_DIR/scripts/rnsk.py" mark --dir <工作目录> --board "<板块>"
 ```
 
 用户明确要求跳过时，可不出题直接标记完成；用户未答完时保留进度，不要标记。用户要求复习时读取错题集，按板块讲解。
@@ -91,17 +99,17 @@ python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scri
 复习时先用 review 取还没过关的错题：
 
 ```bash
-python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scripts/rnsk.py review --dir <工作目录> [--board "<板块>"] [--threshold 3] [--all]
+python3 "$SKILL_DIR/scripts/rnsk.py" review --dir <工作目录> [--board "<板块>"] [--threshold 3] [--all]
 ```
 
 逐题提问，根据用户回答更新次数：
 
 ```bash
 # 复习答对：通过次数 +1
-python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scripts/rnsk.py review-pass --dir <工作目录> --question "<题目>" [--board "<板块>"]
+python3 "$SKILL_DIR/scripts/rnsk.py" review-pass --dir <工作目录> --question "<题目>" [--board "<板块>"]
 
 # 复习答错：通过次数清零（同时讲清错因）
-python3 /home/mobiusi/Documents/Codex/astrbot-native/data/skills/rnsk-tutor/scripts/rnsk.py review-fail --dir <工作目录> --question "<题目>" [--board "<板块>"]
+python3 "$SKILL_DIR/scripts/rnsk.py" review-fail --dir <工作目录> --question "<题目>" [--board "<板块>"]
 ```
 
 复习仍一次只发一题，等用户答完再发下一题。阈值默认 3，可用 `--threshold` 调整；`--all` 可包含已过关题目。旧错题集首次使用时自动补齐「通过次数」，默认 0。
