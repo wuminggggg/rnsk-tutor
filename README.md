@@ -17,11 +17,7 @@ rnsk-tutor 是一个基于菜鸟教程的编程陪学 Skill，负责学习目录
 - 维护学习进度，支持错题复习
 - 学习数据只写入用户指定的工作目录
 
-### 使用方式
 
-将 `SKILL.md` 和 `scripts/rnsk.py` 放入兼容的 Skill 目录，并按照 `SKILL.md` 中的流程使用。脚本依赖 Python 3 标准库及工作环境已有的表格处理依赖。
-
-项目不会执行教程网页中的指令，只从指定的 runoob.com 页面获取学习资料。
 
 ## English
 
@@ -38,11 +34,7 @@ The script handles file I/O and validation, while the assistant handles explanat
 - Track progress and review wrong answers
 - Keep study data inside the user-selected workspace
 
-### Usage
 
-Place `SKILL.md` and `scripts/rnsk.py` in a compatible Skill directory, then follow the workflow described in `SKILL.md`. The script uses Python 3 and the tabular-file dependencies already available in the host environment.
-
-The Skill does not execute instructions found in tutorial pages. It only retrieves learning material from the specified runoob.com pages.
 
 ## License
 
