@@ -5,14 +5,18 @@
 脚本只处理网络抓取、目录、题目册和错题集；讲课、出题和判分由助手完成。
 
 用法：
-    rnsk.py init   --dir <工作目录> --lang python3 [--url <教程入口>] [--limit N] [--force]
-    rnsk.py next   --dir <工作目录>
-    rnsk.py mark   --dir <工作目录> --board "<板块名字>" [--undo]
-    rnsk.py addq   --dir <工作目录> --board <板块> --type 单选题 --question <题干> \
-                   --options "A.xx|B.xx|C.xx|D.xx" --answer A
-    rnsk.py wrong  --dir <工作目录> --board <板块> --question <题干> \
-                   --wrong <错误答案> --right <正确答案>
-    rnsk.py stats  --dir <工作目录>
+    rnsk.py init        --dir <工作目录> --lang python3 [--url <教程入口>] [--limit N] [--force]
+    rnsk.py next        --dir <工作目录>
+    rnsk.py mark        --dir <工作目录> --board "<板块名字>" [--undo]
+    rnsk.py addq        --dir <工作目录> --board <板块> --type 单选题 --question <题干> \
+                        --options "A.xx|B.xx|C.xx|D.xx" --answer A
+    rnsk.py review      --dir <工作目录> [--board <板块>] [--threshold 3] [--all]
+    rnsk.py review-pass --dir <工作目录> --question <题干> [--board <板块>] [--threshold 3]
+    rnsk.py review-fail --dir <工作目录> --question <题干> [--board <板块>] [--threshold 3]
+    rnsk.py stats       --dir <工作目录>
+
+错题集里的「通过次数」记录连续复习通过次数：复习答对 +1，答错清零；
+达到阈值（默认 3）后就不再进入复习列表，直到再次答错被清零。
 """
 
 from __future__ import annotations
@@ -41,7 +45,8 @@ Q_SHEET = "题目册"
 W_SHEET = "错题集"
 
 Q_HEADERS = ["序号", "板块", "知识点", "难度", "题型", "题目", "选项", "正确答案", "出题时间"]
-W_HEADERS = ["回答错误时间", "板块", "题目", "错误答案", "正确答案"]
+W_HEADERS = ["回答错误时间", "板块", "题目", "选项", "正确答案", "通过次数"]
+DEFAULT_REVIEW_THRESHOLD = 3
 
 # 菜鸟教程常用语言入口
 ENTRY = {
@@ -255,10 +260,6 @@ def classify_board(title: str, summary: str = "") -> tuple[str, str]:
     return "核心知识", "false"
 
 
-def is_skippable(board: dict) -> bool:
-    return board.get("板块类别", "核心知识") == "推广/导读"
-
-
 def render_index(lang: str, boards: list[dict]) -> str:
     lines = [
         f"# {pretty_lang(lang)} 知识目录",
@@ -306,32 +307,37 @@ def is_done(board: dict) -> bool:
 
 # ---------------------------------------------------------------- Excel
 
-def _migrate_question_book(path: str) -> None:
-    """给旧题库补充结构字段，不改已有题目内容。"""
+def _migrate_book(path: str, sheet: str, headers: list[str],
+                  defaults: dict | None = None) -> None:
+    """给旧表格补充缺失字段，不改已有内容（新列补默认值）。"""
     from openpyxl import load_workbook
+    defaults = defaults or {}
     wb = load_workbook(path)
-    ws = wb[Q_SHEET] if Q_SHEET in wb.sheetnames else wb.active
-    headers = [c.value for c in ws[1]]
-    missing = [h for h in Q_HEADERS if h not in headers]
+    ws = wb[sheet] if sheet in wb.sheetnames else wb.active
+    existing = [c.value for c in ws[1]]
+    missing = [h for h in headers if h not in existing]
     if not missing:
         return
     for h in missing:
-        ws.cell(row=1, column=ws.max_column + 1, value=h)
+        col = ws.max_column + 1
+        ws.cell(row=1, column=col, value=h)
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(row=r, column=col).value is None:
+                ws.cell(row=r, column=col, value=defaults.get(h, ""))
     wb.save(path)
 
 
 def ensure_books(root: str) -> None:
-    from openpyxl import Workbook, load_workbook
+    from openpyxl import Workbook
     from openpyxl.styles import Font
 
-    for fname, sheet, headers in (
-        (QUESTION_BOOK, Q_SHEET, Q_HEADERS),
-        (WRONG_BOOK, W_SHEET, W_HEADERS),
+    for fname, sheet, headers, defaults in (
+        (QUESTION_BOOK, Q_SHEET, Q_HEADERS, {}),
+        (WRONG_BOOK, W_SHEET, W_HEADERS, {"通过次数": 0}),
     ):
         path = os.path.join(root, fname)
         if os.path.exists(path):
-            if fname == QUESTION_BOOK:
-                _migrate_question_book(path)
+            _migrate_book(path, sheet, headers, defaults)
             continue
         wb = Workbook()
         ws = wb.active
@@ -341,7 +347,7 @@ def ensure_books(root: str) -> None:
             cell.font = Font(bold=True)
         widths = {"序号": 8, "板块": 22, "题型": 10, "题目": 52, "选项": 48,
                   "正确答案": 14, "出题时间": 20, "回答错误时间": 20,
-                  "错误答案": 14}
+                  "通过次数": 10}
         for i, h in enumerate(headers, start=1):
             ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = widths.get(h, 18)
         wb.save(path)
@@ -398,15 +404,100 @@ def cmd_addq(args) -> None:
     print(json.dumps({"ok": True, "序号": seq, "文件": path}, ensure_ascii=False))
 
 
-def cmd_wrong(args) -> None:
+def _wrong_rows(ws) -> tuple[dict, list[dict]]:
+    """读出错题集，返回（列名->序号, 行列表）。"""
+    headers = [c.value for c in ws[1]]
+    col = {name: i for i, name in enumerate(headers)}
+    rows = []
+    for r in range(2, ws.max_row + 1):
+        data = {h: ws.cell(row=r, column=col[h] + 1).value for h in headers}
+        rows.append({"row": r, "data": data})
+    return col, rows
+
+
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def cmd_review(args) -> None:
+    root = rnsk_root(args.dir)
+    path = os.path.join(root, WRONG_BOOK)
+    if not os.path.exists(path):
+        print(json.dumps({"ok": False, "error": "没有错题集.xlsx，请提供已有错题集"},
+                         ensure_ascii=False))
+        return
+    ensure_books(root)
+    _, ws = open_book(path, W_SHEET)
+    _, rows = _wrong_rows(ws)
+    board = (args.board or "").strip()
+    items, mastered = [], 0
+    for it in rows:
+        d = it["data"]
+        if board and str(d.get("板块") or "").strip() != board:
+            continue
+        cnt = _as_int(d.get("通过次数"))
+        rec = {
+            "序号": it["row"] - 1,
+            "板块": d.get("板块") or "",
+            "题目": d.get("题目") or "",
+            "正确答案": d.get("正确答案") or "",
+            "通过次数": cnt,
+        }
+        if cnt >= args.threshold:
+            mastered += 1
+            if args.all:
+                items.append(rec)
+        else:
+            items.append(rec)
+    print(json.dumps({
+        "ok": True, "阈值": args.threshold,
+        "待复习": sum(1 for i in items if i["通过次数"] < args.threshold),
+        "已过关省略": mastered,
+        "错题": items,
+    }, ensure_ascii=False))
+
+
+def _update_wrong_count(path: str, board: str, question: str,
+                        threshold: int, mode: str) -> dict:
+    wb, ws = open_book(path, W_SHEET)
+    col, rows = _wrong_rows(ws)
+    q = question.strip()
+    b = (board or "").strip()
+    hit = next((it for it in rows
+                if str(it["data"].get("题目") or "").strip() == q
+                and (not b or str(it["data"].get("板块") or "").strip() == b)), None)
+    if not hit:
+        return {"ok": False, "error": f"错题集里没找到题目「{question}」"}
+    cur = _as_int(hit["data"].get("通过次数"))
+    if mode == "pass":
+        new = cur + 1
+        action = "复习通过，通过次数 +1"
+    else:
+        new = 0
+        action = "复习答错，通过次数清零"
+    ws.cell(row=hit["row"], column=col["通过次数"] + 1, value=new)
+    wb.save(path)
+    return {"ok": True, "题目": question, "板块": hit["data"].get("板块") or "",
+            "通过次数": new, "已过关": new >= threshold, "动作": action}
+
+
+def cmd_review_pass(args) -> None:
     root = rnsk_root(args.dir)
     ensure_books(root)
-    path = os.path.join(root, WRONG_BOOK)
-    wb, ws = open_book(path, W_SHEET)
-    ws.append([now_str(), args.board, args.question, args.wrong, args.right])
-    wb.save(path)
-    print(json.dumps({"ok": True, "文件": path, "错题总数": ws.max_row - 1},
-                     ensure_ascii=False))
+    result = _update_wrong_count(os.path.join(root, WRONG_BOOK),
+                                 args.board, args.question, args.threshold, "pass")
+    print(json.dumps(result, ensure_ascii=False))
+
+
+def cmd_review_fail(args) -> None:
+    root = rnsk_root(args.dir)
+    ensure_books(root)
+    result = _update_wrong_count(os.path.join(root, WRONG_BOOK),
+                                 args.board, args.question, args.threshold, "fail")
+    print(json.dumps(result, ensure_ascii=False))
 
 
 # ---------------------------------------------------------------- 主命令
@@ -541,6 +632,11 @@ def cmd_stats(args) -> None:
             try:
                 _, ws = open_book(path, sheet)
                 result[fname] = ws.max_row - 1
+                if fname == WRONG_BOOK:
+                    _, rows = _wrong_rows(ws)
+                    result["待复习错题"] = sum(
+                        1 for it in rows
+                        if _as_int(it["data"].get("通过次数")) < DEFAULT_REVIEW_THRESHOLD)
             except Exception as exc:  # noqa: BLE001
                 result[fname] = f"读取失败: {exc}"
         else:
@@ -584,13 +680,25 @@ def main() -> None:
     p.add_argument("--difficulty", default="基础", help="基础/进阶/综合")
     p.set_defaults(func=cmd_addq)
 
-    p = sub.add_parser("wrong", help="往错题集.xlsx 追加一条错题")
+    p = sub.add_parser("review", help="列出还没过关的错题")
     p.add_argument("--dir", required=True)
-    p.add_argument("--board", required=True)
-    p.add_argument("--question", required=True)
-    p.add_argument("--wrong", required=True, help="用户的错误答案")
-    p.add_argument("--right", required=True, help="正确答案")
-    p.set_defaults(func=cmd_wrong)
+    p.add_argument("--board", default="", help="只看某个板块")
+    p.add_argument("--threshold", type=int, default=DEFAULT_REVIEW_THRESHOLD,
+                   help="连续通过几次算过关（默认 3）")
+    p.add_argument("--all", action="store_true", help="连带已过关的错题一起列出")
+    p.set_defaults(func=cmd_review)
+
+    for name, fn, helptext in (
+        ("review-pass", cmd_review_pass, "复习答对：通过次数 +1"),
+        ("review-fail", cmd_review_fail, "复习答错：通过次数清零"),
+    ):
+        p = sub.add_parser(name, help=helptext)
+        p.add_argument("--dir", required=True)
+        p.add_argument("--board", default="")
+        p.add_argument("--question", required=True)
+        p.add_argument("--threshold", type=int, default=DEFAULT_REVIEW_THRESHOLD,
+                       help="连续通过几次算过关（默认 3）")
+        p.set_defaults(func=fn)
 
     p = sub.add_parser("stats", help="看学习进度")
     p.add_argument("--dir", required=True)

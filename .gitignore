@@ -3,3 +3,4 @@ __pycache__/
 rnsk/
 .env
 *.log
+*.bak-*
